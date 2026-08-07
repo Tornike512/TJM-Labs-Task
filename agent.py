@@ -1,11 +1,13 @@
-"""Conversation logic: a small state machine for the sales call.
+"""Conversation logic: a small state machine for the inbound sales call.
 
 States: IDENTIFY -> DISCOVERY -> PITCH -> FOLLOW_UP -> END
 
 Anti-hallucination rule: the agent only ever states facts from three
 sources - the pharmacy's API record, what the caller said on this call,
-and knowledge.FACTS. Any question outside those gets knowledge.FALLBACK,
-which funnels the caller toward the follow-up tools.
+and knowledge.py. knowledge.py deliberately contains no product, pricing,
+or performance claims (none were supplied), so every company-specific
+question gets knowledge.FALLBACK, which funnels the caller toward the
+follow-up tools and a human specialist.
 """
 
 import re
@@ -38,24 +40,9 @@ _EMAIL_PHRASES = ["email", "e-mail", "send me", "send the", "send it",
 _CALLBACK_PHRASES = ["call back", "callback", "call me", "ring me",
                      "call later", "phone me", "call us"]
 
-# Keyword triggers for the facts the agent is allowed to state.
-_KNOWLEDGE_TRIGGERS = [
-    ("pricing", ["price", "pricing", "cost", "how much", "expensive",
-                 "charge", "fee"]),
-    ("onboarding", ["onboard", "set up", "setup", "get started", "migration",
-                    "implementation", "how long"]),
-    ("results", ["results", "roi", "proof", "actually help", "benefit"]),
-    ("what_we_do", ["what do you do", "what does tjm", "what is tjm",
-                    "tell me more", "how does it work", "what's this about",
-                    "who are you", "who is this", "what do you offer",
-                    "about your product", "about the platform"]),
-]
-_TOPIC_LABELS = {
-    "pricing": "pricing",
-    "onboarding": "onboarding",
-    "results": "results and ROI",
-    "what_we_do": "TJM Labs overview",
-}
+# The agent's own identity is the one question it can answer directly.
+_IDENTITY_TRIGGERS = ["who is this", "who's this", "who am i speaking",
+                      "who are you", "who's calling", "who is calling"]
 
 # Slots whose answer is a free-text value (vs. a yes/no/choice).
 _VALUE_SLOTS = {"name", "volume", "pain_point", "callback_time",
@@ -87,13 +74,6 @@ def _is_positive(lowered):
     return bool(_words(lowered) & _YES_WORDS)
 
 
-def _match_knowledge(lowered):
-    for key, triggers in _KNOWLEDGE_TRIGGERS:
-        if _has_any(lowered, triggers):
-            return key
-    return None
-
-
 def _parse_volume(text):
     """Pull a monthly script count out of free text ('about 2,500 a month')."""
     match = re.search(r"\d[\d,]*", text)
@@ -113,7 +93,7 @@ class Agent:
         self.volume = None
         self.email = None
         self.caller_notes = []  # things the caller told us, quotable
-        self.last_topic = "TJM Labs overview"  # for the follow-up email
+        self.last_topic = "TJM Labs details"  # for the follow-up email
         self.pending_tool = None  # tool requested before we knew the name
         self.record = None
 
@@ -133,24 +113,25 @@ class Agent:
     # ---- openers -----------------------------------------------------------
 
     def start(self):
-        """Opening line(s) of the call."""
+        """Opening line(s) of the call - the pharmacy is calling us."""
         if self.pharmacy_name:
             where = f" in {self.city}" if self.city else ""
             lines = [
-                f"Hi, is this {self.pharmacy_name}{where}? This is "
-                f"{knowledge.REP_NAME} calling from {knowledge.COMPANY}."
+                f"Thanks for calling {knowledge.COMPANY}, this is "
+                f"{knowledge.REP_NAME}. Am I speaking with "
+                f"{self.pharmacy_name}{where}?"
             ]
             if self.volume is not None:
                 lines.append(
                     f"I see you're filling around {self.volume:,} scripts a "
-                    "month - impressive operation."
+                    "month."
                 )
             self.awaiting = "confirm_identity"
             return lines
         self.awaiting = "name"
         return [
-            f"Hi, this is {knowledge.REP_NAME} calling from "
-            f"{knowledge.COMPANY}. Thanks for taking the call!",
+            f"Thanks for calling {knowledge.COMPANY}, this is "
+            f"{knowledge.REP_NAME}.",
             "Could I get your pharmacy's name?",
         ]
 
@@ -177,10 +158,8 @@ class Agent:
         if self.awaiting in _VALUE_SLOTS and not question:
             return self._fill_slot(cleaned, lowered)
 
-        fact_key = _match_knowledge(lowered)
-        if fact_key:
-            self.last_topic = _TOPIC_LABELS[fact_key]
-            lines = [knowledge.FACTS[fact_key]]
+        if _has_any(lowered, _IDENTITY_TRIGGERS):
+            lines = [f"This is {knowledge.REP_NAME} with {knowledge.COMPANY}."]
             reprompt = self._reprompt()
             if reprompt:
                 lines.append(reprompt)
@@ -198,9 +177,8 @@ class Agent:
             return self._anything_else(lowered)
 
         return [
-            "I want to make sure I'm useful here - you can ask about pricing, "
-            "onboarding, or results, or I can set up an email or a specialist "
-            "callback."
+            "Happy to help - I can send you details by email or schedule a "
+            "callback with a specialist. Which works better?"
         ]
 
     # ---- identification ----------------------------------------------------
@@ -269,8 +247,8 @@ class Agent:
             self.awaiting = "anything_else"
             tools.send_follow_up_email(self.pharmacy_name, self.last_topic)
             return [
-                f"Done - I've queued an email to {self.email} with the "
-                f"{self.last_topic} details. Anything else I can help with?"
+                f"Done - I've queued an email to {self.email} about "
+                f"{self.last_topic}. Anything else I can help with?"
             ]
 
         return [self._reprompt()]
@@ -287,34 +265,45 @@ class Agent:
         ]
 
     def _deliver_pitch(self, lowered):
-        """PITCH: acknowledge their pain point, tailor by Rx volume."""
+        """PITCH: acknowledge their pain point, grounded only in what the
+        caller and the API told us - no product or pricing claims."""
         self.state = PITCH
         if "insurance" in lowered or "paperwork" in lowered:
-            ack = "Insurance paperwork - that's the pain we hear about most."
+            ack = "Insurance paperwork - understood."
         elif "refill" in lowered:
-            ack = "Refills - the daily grind, understood."
+            ack = "Refills - got it."
         elif "inventory" in lowered or "stock" in lowered:
-            ack = "Inventory - keeping stock right is a constant battle."
+            ack = "Inventory - understood."
         else:
-            ack = "Got it - thanks, that's useful context."
+            ack = "Got it - thanks for sharing that."
 
-        lines = [ack, knowledge.FACTS["what_we_do"]]
+        lines = [ack]
         if self.volume is not None and \
                 self.volume >= knowledge.HIGH_VOLUME_THRESHOLD:
             lines.append(
-                f"For a pharmacy your size - about {self.volume:,} scripts a "
-                f"month - it really adds up: {knowledge.FACTS['results']} "
-                "Your volume would also qualify for the discounts above "
-                "1,000 monthly prescriptions."
+                f"At about {self.volume:,} prescriptions a month, "
+                f"{self.pharmacy_name} is a high-volume operation - I'll "
+                "flag that for our specialist so the follow-up is tailored "
+                "to your scale."
+            )
+        elif self.volume is not None:
+            lines.append(
+                f"I'll make sure our specialist knows {self.pharmacy_name} "
+                f"fills about {self.volume:,} scripts a month and what you "
+                "just told me, so the follow-up fits your operation."
             )
         else:
-            lines.append(knowledge.FACTS["results"])
+            lines.append(
+                f"I'll pass your notes along so the follow-up is relevant "
+                f"to {self.pharmacy_name}."
+            )
 
         self.state = FOLLOW_UP
         self.awaiting = "followup_choice"
         lines.append(
-            "Would it help if I emailed you the details, or should I "
-            "schedule a callback with one of our specialists?"
+            "For specifics - pricing, product details - our specialist team "
+            "is the right source. Would details by email or a specialist "
+            "callback work better for you?"
         )
         return lines
 
@@ -335,8 +324,8 @@ class Agent:
             self.awaiting = "anything_else"
             tools.send_follow_up_email(self.pharmacy_name, self.last_topic)
             return [
-                f"Done - I've queued an email to {self.email} with the "
-                f"{self.last_topic} details. Anything else I can help with?"
+                f"Done - I've queued an email to {self.email} about "
+                f"{self.last_topic}. Anything else I can help with?"
             ]
         self.awaiting = "email_address"
         return [
@@ -367,9 +356,10 @@ class Agent:
         if _is_negative(lowered):
             return self._close()
         if _is_positive(lowered):
+            self.awaiting = "followup_choice"
             return [
-                "Sure - ask away. Pricing, onboarding, results - or I can "
-                "set up another email or callback."
+                "Sure - I can send you details by email or set up a "
+                "specialist callback. Which works better?"
             ]
         return [self._reprompt()]
 
@@ -389,7 +379,7 @@ class Agent:
     def _close(self):
         self.state = END
         name = self.pharmacy_name or "you"
-        return [f"Thanks for your time, {name}. Have a great day!"]
+        return [f"Thanks for calling, {name}. Have a great day!"]
 
     def _reprompt(self):
         prompts = {

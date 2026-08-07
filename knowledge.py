@@ -1,32 +1,16 @@
-"""The ONLY facts about TJM Labs the agent may state.
+"""Grounding boundary for the agent.
 
-All company facts below are invented placeholders for this take-home
-(flagged in the README). The agent is allowed to speak from exactly three
-sources: the pharmacy API record, what the caller said, and this file.
-Everything else gets FALLBACK.
+Deliberate design decision: the task prompt supplies no approved product
+knowledge for TJM Labs, so this file contains NO product, pricing,
+onboarding, integration, or performance claims - and therefore the agent
+cannot state any. Questions on those topics get FALLBACK, which routes the
+caller to a human specialist via the email / callback tools. The only
+things the agent claims about itself are the company name and a
+placeholder rep persona.
 """
 
 COMPANY = "TJM Labs"
-REP_NAME = "Alex"
-
-FACTS = {
-    "what_we_do": (
-        "TJM Labs makes a pharmacy operations platform that automates refill "
-        "reminders, inventory forecasting, and insurance pre-checks."
-    ),
-    "pricing": (
-        "Pricing starts at $299 per month per location, with volume discounts "
-        "above 1,000 monthly prescriptions."
-    ),
-    "onboarding": (
-        "Onboarding takes about two weeks and includes free data migration "
-        "from your current system."
-    ),
-    "results": (
-        "Pharmacies using TJM Labs report roughly 30% less time spent on "
-        "manual insurance paperwork."
-    ),
-}
+REP_NAME = "Alex"  # placeholder persona name, not a real person
 
 FALLBACK = (
     "I don't have that information on hand - I can send you the details by "
