@@ -18,7 +18,7 @@ this way, and what would change on the way to production.
 
 - Real telephony, speech, or an actual LLM call — the conversation is text over stdin/stdout and intent detection is deterministic (see §7).
 - Persistence, CRM writes, multi-call memory — tools are print-mocks.
-- Natural-language coverage beyond a sales-call happy path plus the failure modes listed in `tests.py`.
+- Natural-language coverage beyond a sales-call happy path plus the failure modes listed in `tests/`.
 
 ## 2. Explicit assumptions
 
@@ -81,10 +81,12 @@ Dispatch order in `Agent.handle()` is the core correctness mechanism:
 
 ## 5. Architecture
 
-Five stdlib-only modules, one file each (see README for the map):
-`main.py` (I/O loop) → `agent.py` (state machine) → `api.py` (data),
-`tools.py` (actions), `knowledge.py` (grounding boundary). `tests.py`
-covers the API client, parsers, and conversation behavior (31 tests).
+A stdlib-only `pharmacy_agent/` package behind a thin root `main.py`
+entry point: `cli.py` (I/O loop) → `agent.py` (state machine) →
+`api.py` (data), `tools.py` (actions), `knowledge.py` (grounding
+boundary). The `tests/` package covers the API client, parsers, and
+conversation behavior (31 tests across `test_api.py`,
+`test_parsing.py`, and `test_agent.py`, with shared `fixtures.py`).
 No frameworks: the exercise is conversation design, and a visible,
 auditable state machine demonstrates it better than a dependency would.
 
@@ -166,7 +168,7 @@ the API-outage notice. The state machine gives natural structured-log
 points — every `handle()` could emit `(state, awaiting, intent_matched,
 tool_fired)`. The metrics that matter: fallback rate (grounding pressure
 gauge), tool conversion rate, identification hit rate, and unparsed-slot
-rate. Evaluation: replay a corpus of scripted calls (the `tests.py`
+rate. Evaluation: replay a corpus of scripted calls (the `tests/test_agent.py`
 conversations are the seed) and fail CI on any grounding violation —
 i.e. an agent line containing a number or entity not traceable to the
 three sources.

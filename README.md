@@ -26,15 +26,15 @@ cat script.txt | python3 main.py                 # macOS / Linux
 Get-Content script.txt | python main.py          # Windows PowerShell
 ```
 
-## Architecture (5 lines)
+## Architecture
 
-- `main.py` — CLI entry point; reads caller lines, prints agent lines.
-- `api.py` — fetches the pharmacy list once; phone-normalized lookup; Rx-volume extraction across both record shapes in the data.
-- `agent.py` — the conversation state machine: `IDENTIFY → DISCOVERY → PITCH → FOLLOW_UP → END`, with state-aware intent detection.
-- `tools.py` — mock actions: `send_follow_up_email`, `schedule_callback` (print `[TOOL CALLED]` markers).
-- `knowledge.py` — the grounding boundary: deliberately empty of product claims, plus the safe fallback line and the high-volume threshold.
-
-`tests.py` holds the unittest suite.
+- `main.py` — thin entry point; the implementation lives in the `pharmacy_agent/` package.
+- `pharmacy_agent/cli.py` — the call loop: reads caller lines, prints agent lines.
+- `pharmacy_agent/api.py` — fetches the pharmacy list once; phone-normalized lookup; Rx-volume extraction across both record shapes in the data.
+- `pharmacy_agent/agent.py` — the conversation state machine: `IDENTIFY → DISCOVERY → PITCH → FOLLOW_UP → END`, with state-aware intent detection.
+- `pharmacy_agent/tools.py` — mock actions: `send_follow_up_email`, `schedule_callback` (print `[TOOL CALLED]` markers).
+- `pharmacy_agent/knowledge.py` — the grounding boundary: deliberately empty of product claims, plus the safe fallback line and the high-volume threshold.
+- `tests/` — the unittest suite (31 tests) split by responsibility: `test_api.py`, `test_parsing.py`, `test_agent.py`, with shared records in `fixtures.py`.
 
 ## How hallucination is prevented
 

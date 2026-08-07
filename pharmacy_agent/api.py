@@ -5,8 +5,6 @@ import urllib.request
 
 DEFAULT_API_URL = "https://67e14fb758cc6bf785254550.mockapi.io/pharmacies"
 
-# Some records carry junk phones like "+1-555-NEW-LEAD-TEST" that normalize to
-# almost nothing; requiring a minimum digit count keeps them from matching.
 _MIN_MATCH_DIGITS = 7
 
 

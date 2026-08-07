@@ -12,9 +12,9 @@ follow-up tools and a human specialist.
 
 import re
 
-import api
-import knowledge
-import tools
+from . import api
+from . import knowledge
+from . import tools
 
 IDENTIFY = "IDENTIFY"
 DISCOVERY = "DISCOVERY"
@@ -35,11 +35,8 @@ _QUESTION_STARTERS = {
     "do", "does", "can", "could", "what", "when", "where", "who", "whom",
     "how", "is", "are", "will", "would", "why", "which",
 }
-# Question words that phrase a *request* ("Can you email me?") rather than
-# a capability question ("Do you send email reminders?").
 _REQUEST_MODALS = {"can", "could", "would", "will", "please"}
 
-# The agent's own identity is the one question it can answer directly.
 _IDENTITY_TRIGGERS = ["who is this", "who's this", "who am i speaking",
                       "who are you", "who's calling", "who is calling"]
 
@@ -52,7 +49,6 @@ _TIME_HINTS = re.compile(
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"next week|anytime|any time)\b")
 
-# Directed requests: a send/call verb aimed at me/us within one clause.
 _EMAIL_REQUEST = re.compile(r"\b(e-?mail|send|mail|shoot)\b[^.?!]{0,40}\b(me|us)\b")
 _CALLBACK_REQUEST = re.compile(r"\b(call|ring|phone)\s+(me|us)\b")
 _CALLBACK_NOUN = re.compile(r"\bcall ?back\b")
@@ -65,7 +61,6 @@ _NUM_WORDS = {
     "a": 1, "couple": 2, "few": 3, "several": 4,
 }
 
-# Slots whose answer is a free-text value (vs. a yes/no/choice).
 _VALUE_SLOTS = {"name", "volume", "pain_point", "callback_time",
                 "email_address"}
 
@@ -113,7 +108,7 @@ def _parse_volume(text):
     lead_words = match.group(1).split()[-2:]
     values = [_NUM_WORDS[w] for w in lead_words if w in _NUM_WORDS]
     if lead_words and lead_words[-1] not in _NUM_WORDS:
-        return None  # "thousands of reasons not to say"
+        return None
     return (sum(values) or 1) * base
 
 
@@ -132,19 +127,17 @@ class Agent:
 
     def __init__(self, pharmacy):
         self.state = IDENTIFY
-        self.awaiting = None  # sub-question we asked last
+        self.awaiting = None
         self.pharmacy_name = None
         self.city = None
         self.volume = None
         self.volume_attempts = 0
         self.email = None
-        self.caller_notes = []  # things the caller told us, quotable
-        self.last_topic = "TJM Labs details"  # for the follow-up email
-        self.pending_tool = None  # tool requested before we knew the name
+        self.caller_notes = []
+        self.last_topic = "TJM Labs details"
+        self.pending_tool = None
         self.record = None
 
-        # A record with no usable name is treated as an unknown caller, but
-        # we keep whatever fields it does have.
         if pharmacy and pharmacy.get("name"):
             self.record = pharmacy
             self.pharmacy_name = pharmacy["name"]
@@ -155,8 +148,6 @@ class Agent:
     @property
     def done(self):
         return self.state == END
-
-    # ---- openers -----------------------------------------------------------
 
     def start(self):
         """Opening line(s) of the call - the pharmacy is calling us."""
@@ -181,8 +172,6 @@ class Agent:
             "Could I get your pharmacy's name?",
         ]
 
-    # ---- main dispatch -----------------------------------------------------
-
     def handle(self, text):
         """Advance the conversation one turn; returns a list of reply lines."""
         cleaned = text.strip()
@@ -195,22 +184,13 @@ class Agent:
 
         question = _is_question(lowered)
 
-        # 1. A pending free-text slot consumes its answer first, so "Call me
-        #    tomorrow at 10" fills callback_time instead of re-triggering
-        #    the callback intent. Questions still escape to the handlers
-        #    below (except time-shaped ones while scheduling).
         if self._slot_accepts(lowered, question):
             return self._fill_slot(cleaned, lowered)
 
-        # 2. Explicit, directed tool requests ("email me the details",
-        #    "could you call me?"), or a bare "email"/"callback" right after
-        #    we asked which one they want. Capability questions ("do you
-        #    send email reminders?") fall through to the fallback instead.
         tool = self._match_tool_request(lowered, question)
         if tool:
             return self._request_tool(tool)
 
-        # 3. The agent's own identity is the one question it answers itself.
         if _has_any(lowered, _IDENTITY_TRIGGERS):
             lines = [f"This is {knowledge.REP_NAME} with {knowledge.COMPANY}."]
             reprompt = self._reprompt()
@@ -218,7 +198,6 @@ class Agent:
                 lines.append(reprompt)
             return lines
 
-        # 4. Any other question is outside our three sources -> fallback.
         if question:
             return self._fallback(cleaned)
 
@@ -229,7 +208,6 @@ class Agent:
         if self.awaiting == "anything_else":
             return self._anything_else(lowered)
 
-        # Unmatched statement with nothing pending: funnel to the tools.
         self.state = FOLLOW_UP
         self.awaiting = "followup_choice"
         return [
@@ -241,16 +219,11 @@ class Agent:
         """Should the pending value slot consume this utterance?"""
         if self.awaiting not in _VALUE_SLOTS:
             return False
-        # A tool request is never a pharmacy name: "Email me the details"
-        # parks as pending_tool and we re-ask for the name. Only the name
-        # slot defers to intent matching - callback_time must keep
-        # consuming statements like "Call me tomorrow at 10".
         if self.awaiting == "name" and \
                 self._match_tool_request(lowered, question):
             return False
         if not question:
             return True
-        # "Does tomorrow at 10 work?" is still a scheduling answer.
         return self.awaiting == "callback_time" and \
             bool(_TIME_HINTS.search(lowered))
 
@@ -258,9 +231,6 @@ class Agent:
         """Tool intent from wording AND conversation state, not bare words."""
         parts = lowered.split()
         first = parts[0] if parts else ""
-        # Directed requests fire even in question form, but only when the
-        # question is a polite request ("can you...") - not a capability
-        # probe ("do you call us back if...?").
         if not question or first in _REQUEST_MODALS:
             if _EMAIL_REQUEST.search(lowered):
                 return "email"
@@ -270,14 +240,11 @@ class Agent:
             if _CALLBACK_NOUN.search(lowered):
                 return "callback"
             if self.awaiting == "followup_choice":
-                # Short answers to "email or callback?" pick one.
                 if re.search(r"\be-?mail\b|\bmail\b", lowered):
                     return "email"
                 if re.search(r"\bcall\b|\bphone\b", lowered):
                     return "callback"
         return None
-
-    # ---- identification ----------------------------------------------------
 
     def _confirm_identity(self, lowered):
         if _is_negative(lowered):
@@ -290,7 +257,6 @@ class Agent:
             return [
                 "Apologies for the mix-up! Could I get your pharmacy's name?"
             ]
-        # Anything that isn't a denial we take as confirmation.
         if self.volume is None:
             self.awaiting = "volume"
             return [
@@ -298,8 +264,6 @@ class Agent:
                 f"{self.pharmacy_name} fill in a month?"
             ]
         return self._begin_discovery()
-
-    # ---- value slots -------------------------------------------------------
 
     def _fill_slot(self, cleaned, lowered):
         slot = self.awaiting
@@ -325,8 +289,6 @@ class Agent:
             return self._deliver_pitch(lowered)
 
         if slot == "callback_time":
-            # "not sure" / "never mind" is a refusal, not a time - never
-            # hand the scheduler junk data.
             if _is_negative(lowered) or _has_any(lowered, _REFUSAL_PHRASES):
                 self.awaiting = "followup_choice"
                 return [
@@ -371,8 +333,6 @@ class Agent:
         self.volume = volume
         self.caller_notes.append(f"fills about {volume:,} scripts a month")
         return self._begin_discovery()
-
-    # ---- discovery + pitch -------------------------------------------------
 
     def _begin_discovery(self):
         self.state = DISCOVERY
@@ -425,8 +385,6 @@ class Agent:
             "callback work better for you?"
         )
         return lines
-
-    # ---- follow-up ---------------------------------------------------------
 
     def _request_tool(self, kind):
         if not self.pharmacy_name:
@@ -481,8 +439,6 @@ class Agent:
                 "specialist callback. Which works better?"
             ]
         return [self._reprompt()]
-
-    # ---- fallback + closing ------------------------------------------------
 
     def _fallback(self, cleaned):
         """The one safe answer for anything outside our three sources."""

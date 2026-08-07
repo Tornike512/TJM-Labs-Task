@@ -10,13 +10,11 @@ placeholder rep persona.
 """
 
 COMPANY = "TJM Labs"
-REP_NAME = "Alex"  # placeholder persona name, not a real person
+REP_NAME = "Alex"
 
 FALLBACK = (
     "I don't have that information on hand - I can send you the details by "
     "email or schedule a callback with a specialist. Which works better?"
 )
 
-# Monthly scripts. Live data clusters at 0 / 55-100 / 3000-4000, so 1000
-# cleanly separates the high-volume pharmacies.
 HIGH_VOLUME_THRESHOLD = 1000
