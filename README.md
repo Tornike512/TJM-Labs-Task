@@ -16,9 +16,13 @@ python main.py --api-url "https://bad.invalid/"  # simulate the API being down
 ```
 
 Type replies as the pharmacy; `bye` / `quit` ends the call. You can also
-pipe a scripted call in: `Get-Content script.txt | python main.py`
-(each line is one caller turn; input is echoed so the transcript shows
-both sides).
+pipe a scripted call in — each line is one caller turn, and input is
+echoed so the transcript shows both sides:
+
+```
+cat script.txt | python3 main.py                 # macOS / Linux
+Get-Content script.txt | python main.py          # Windows PowerShell
+```
 
 ## Architecture (5 lines)
 
