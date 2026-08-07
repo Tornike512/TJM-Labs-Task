@@ -84,7 +84,7 @@ Dispatch order in `Agent.handle()` is the core correctness mechanism:
 Five stdlib-only modules, one file each (see README for the map):
 `main.py` (I/O loop) → `agent.py` (state machine) → `api.py` (data),
 `tools.py` (actions), `knowledge.py` (grounding boundary). `tests.py`
-covers the API client, parsers, and conversation behavior (27 tests).
+covers the API client, parsers, and conversation behavior (31 tests).
 No frameworks: the exercise is conversation design, and a visible,
 auditable state machine demonstrates it better than a dependency would.
 

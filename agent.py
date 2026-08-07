@@ -27,7 +27,8 @@ _YES_WORDS = {"yes", "yeah", "yep", "yup", "correct", "right", "speaking",
 _NO_WORDS = {"no", "nope", "nah", "wrong", "incorrect"}
 _NEGATIVE_PHRASES = ["that's all", "thats all", "that's it", "nothing else",
                      "all set", "we're good", "i'm good", "im good",
-                     "no thanks", "no thank you", "not right now", "not sure"]
+                     "no thanks", "no thank you", "not right now", "not sure",
+                     "never mind", "nevermind"]
 _GOODBYE_WORDS = {"bye", "goodbye", "quit", "exit"}
 _GOODBYE_PHRASES = ["hang up", "gotta go", "have to go", "not interested"]
 _QUESTION_STARTERS = {
@@ -240,6 +241,13 @@ class Agent:
         """Should the pending value slot consume this utterance?"""
         if self.awaiting not in _VALUE_SLOTS:
             return False
+        # A tool request is never a pharmacy name: "Email me the details"
+        # parks as pending_tool and we re-ask for the name. Only the name
+        # slot defers to intent matching - callback_time must keep
+        # consuming statements like "Call me tomorrow at 10".
+        if self.awaiting == "name" and \
+                self._match_tool_request(lowered, question):
+            return False
         if not question:
             return True
         # "Does tomorrow at 10 work?" is still a scheduling answer.
@@ -317,6 +325,14 @@ class Agent:
             return self._deliver_pitch(lowered)
 
         if slot == "callback_time":
+            # "not sure" / "never mind" is a refusal, not a time - never
+            # hand the scheduler junk data.
+            if _is_negative(lowered) or _has_any(lowered, _REFUSAL_PHRASES):
+                self.awaiting = "followup_choice"
+                return [
+                    "No problem. Would you prefer details by email instead, "
+                    "or no follow-up for now?"
+                ]
             when = _extract_time(cleaned)
             self.awaiting = "anything_else"
             tools.schedule_callback(self.pharmacy_name, when)

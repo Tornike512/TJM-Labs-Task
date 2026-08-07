@@ -183,6 +183,55 @@ class ConversationTests(unittest.TestCase):
         a.handle("around two thousand a month")
         self.assertEqual(a.volume, 2000)
 
+    def test_tool_request_while_awaiting_name_is_not_stored_as_name(self):
+        with patch("tools.send_follow_up_email") as em:
+            a = Agent(None)
+            a.start()
+            reply = flat_text(a.handle("Email me the details"))
+            self.assertIsNone(a.pharmacy_name)  # never stored as the name
+            self.assertEqual(a.pending_tool, "email")
+            self.assertIn("name", reply)  # re-asks for the pharmacy name
+            em.assert_not_called()
+            reply = flat_text(a.handle("Sunrise Pharmacy"))
+            self.assertEqual(a.pharmacy_name, "Sunrise Pharmacy")
+            self.assertIn("email address", reply)  # email flow resumed
+            em.assert_not_called()  # still waiting on the address
+            a.handle("desk@sunrisepharmacy.com")
+        em.assert_called_once()
+
+    def test_callback_request_while_awaiting_name_parks_pending_tool(self):
+        for request in ("Call me back", "Schedule a callback"):
+            a = Agent(None)
+            a.start()
+            a.handle(request)
+            self.assertIsNone(a.pharmacy_name)
+            self.assertEqual(a.pending_tool, "callback")
+            reply = flat_text(a.handle("Lakeside Pharmacy"))
+            self.assertEqual(a.pharmacy_name, "Lakeside Pharmacy")
+            self.assertIn("when's a good time", reply.lower())
+
+    def test_callback_time_refusal_does_not_schedule(self):
+        with patch("tools.schedule_callback") as cb:
+            a = self._pitched_agent()
+            a.handle("A callback works")
+            reply = flat_text(a.handle("not sure"))
+            cb.assert_not_called()
+        self.assertIn("No problem", reply)  # refusal acknowledged
+        self.assertEqual(a.awaiting, "followup_choice")
+        with patch("tools.send_follow_up_email") as em:
+            a.handle("email")  # email is still on offer afterwards
+        em.assert_called_once()
+
+    def test_callback_time_refusal_then_no_thanks_reaches_close(self):
+        with patch("tools.schedule_callback") as cb:
+            a = self._pitched_agent()
+            a.handle("A callback works")
+            a.handle("never mind")
+            a.handle("no thanks")  # declines the email-instead offer
+            a.handle("no")  # nothing else -> polite close
+            cb.assert_not_called()
+        self.assertTrue(a.done)
+
     def test_identity_denial_recollects_name(self):
         a = Agent(KNOWN)
         a.start()

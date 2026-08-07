@@ -14,7 +14,7 @@ Python 3.9+ — standard library only, nothing to install.
 python main.py                                   # known caller (HealthFirst Pharmacy)
 python main.py --phone "+1-555-000-9999"         # unknown caller
 python main.py --api-url "https://bad.invalid/"  # simulate the API being down
-python -m unittest                               # run the test suite (27 tests)
+python -m unittest                               # run the test suite (31 tests)
 ```
 
 Type replies as the pharmacy; `bye` / `quit` ends the call. You can also
@@ -131,7 +131,7 @@ time, the utterance fills that slot — the tool fires exactly once.
 
 ## Verification scenarios
 
-All covered by `python -m unittest` (27 tests) and/or scripted CLI runs:
+All covered by `python -m unittest` (31 tests) and/or scripted CLI runs:
 
 1. Known caller gets an inbound greeting with name, city, and known volume.
 2. Unknown caller's name and stated high volume drive a grounded pitch with no invented claims.
