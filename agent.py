@@ -34,15 +34,35 @@ _QUESTION_STARTERS = {
     "do", "does", "can", "could", "what", "when", "where", "who", "whom",
     "how", "is", "are", "will", "would", "why", "which",
 }
-
-_EMAIL_PHRASES = ["email", "e-mail", "send me", "send the", "send it",
-                  "send info", "send details", "send over", "mail me"]
-_CALLBACK_PHRASES = ["call back", "callback", "call me", "ring me",
-                     "call later", "phone me", "call us"]
+# Question words that phrase a *request* ("Can you email me?") rather than
+# a capability question ("Do you send email reminders?").
+_REQUEST_MODALS = {"can", "could", "would", "will", "please"}
 
 # The agent's own identity is the one question it can answer directly.
 _IDENTITY_TRIGGERS = ["who is this", "who's this", "who am i speaking",
                       "who are you", "who's calling", "who is calling"]
+
+_REFUSAL_PHRASES = ["rather not", "prefer not", "not say", "don't know",
+                    "dont know", "no idea", "not sure", "skip that",
+                    "can't share", "cant share", "won't say", "wont say"]
+
+_TIME_HINTS = re.compile(
+    r"\d|\b(am|pm|noon|morning|afternoon|evening|tonight|today|tomorrow|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"next week|anytime|any time)\b")
+
+# Directed requests: a send/call verb aimed at me/us within one clause.
+_EMAIL_REQUEST = re.compile(r"\b(e-?mail|send|mail|shoot)\b[^.?!]{0,40}\b(me|us)\b")
+_CALLBACK_REQUEST = re.compile(r"\b(call|ring|phone)\s+(me|us)\b")
+_CALLBACK_NOUN = re.compile(r"\bcall ?back\b")
+
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "a": 1, "couple": 2, "few": 3, "several": 4,
+}
 
 # Slots whose answer is a free-text value (vs. a yes/no/choice).
 _VALUE_SLOTS = {"name", "volume", "pain_point", "callback_time",
@@ -75,11 +95,35 @@ def _is_positive(lowered):
 
 
 def _parse_volume(text):
-    """Pull a monthly script count out of free text ('about 2,500 a month')."""
-    match = re.search(r"\d[\d,]*", text)
+    """Pull a monthly script count out of free text.
+
+    Handles digits ('2500', '2,500', 'about 2,500 a month') and simple word
+    forms ('two thousand', 'twenty five hundred', 'a few hundred').
+    Returns None when no quantity is found.
+    """
+    lowered = text.lower().replace("-", " ")
+    match = re.search(r"\d[\d,]*", lowered)
+    if match:
+        return int(match.group().replace(",", ""))
+    match = re.search(r"((?:[a-z]+\s+){0,2})(hundred|thousand)\b", lowered)
     if not match:
         return None
-    return int(match.group().replace(",", ""))
+    base = 100 if match.group(2) == "hundred" else 1000
+    lead_words = match.group(1).split()[-2:]
+    values = [_NUM_WORDS[w] for w in lead_words if w in _NUM_WORDS]
+    if lead_words and lead_words[-1] not in _NUM_WORDS:
+        return None  # "thousands of reasons not to say"
+    return (sum(values) or 1) * base
+
+
+def _extract_time(cleaned):
+    """'Call me back tomorrow at 10' -> 'tomorrow at 10'."""
+    stripped = re.sub(
+        r"^(?:please\s+|just\s+)*(?:(?:can|could|would|will)\s+you\s+)?"
+        r"(?:please\s+)?(?:call|ring|phone)\s+(?:me|us)\s*(?:back)?[\s,]*",
+        "", cleaned, flags=re.IGNORECASE)
+    stripped = stripped.strip(" .!?")
+    return stripped or cleaned.strip(" .!?")
 
 
 class Agent:
@@ -91,6 +135,7 @@ class Agent:
         self.pharmacy_name = None
         self.city = None
         self.volume = None
+        self.volume_attempts = 0
         self.email = None
         self.caller_notes = []  # things the caller told us, quotable
         self.last_topic = "TJM Labs details"  # for the follow-up email
@@ -147,17 +192,24 @@ class Agent:
         if self._is_goodbye(lowered):
             return self._close()
 
-        if _has_any(lowered, _EMAIL_PHRASES):
-            return self._request_tool("email")
-        if _has_any(lowered, _CALLBACK_PHRASES):
-            return self._request_tool("callback")
-
         question = _is_question(lowered)
 
-        # A statement while we're waiting on a value answers that question.
-        if self.awaiting in _VALUE_SLOTS and not question:
+        # 1. A pending free-text slot consumes its answer first, so "Call me
+        #    tomorrow at 10" fills callback_time instead of re-triggering
+        #    the callback intent. Questions still escape to the handlers
+        #    below (except time-shaped ones while scheduling).
+        if self._slot_accepts(lowered, question):
             return self._fill_slot(cleaned, lowered)
 
+        # 2. Explicit, directed tool requests ("email me the details",
+        #    "could you call me?"), or a bare "email"/"callback" right after
+        #    we asked which one they want. Capability questions ("do you
+        #    send email reminders?") fall through to the fallback instead.
+        tool = self._match_tool_request(lowered, question)
+        if tool:
+            return self._request_tool(tool)
+
+        # 3. The agent's own identity is the one question it answers itself.
         if _has_any(lowered, _IDENTITY_TRIGGERS):
             lines = [f"This is {knowledge.REP_NAME} with {knowledge.COMPANY}."]
             reprompt = self._reprompt()
@@ -165,7 +217,7 @@ class Agent:
                 lines.append(reprompt)
             return lines
 
-        # A question we can't answer from our three sources -> safe fallback.
+        # 4. Any other question is outside our three sources -> fallback.
         if question:
             return self._fallback(cleaned)
 
@@ -176,10 +228,46 @@ class Agent:
         if self.awaiting == "anything_else":
             return self._anything_else(lowered)
 
+        # Unmatched statement with nothing pending: funnel to the tools.
+        self.state = FOLLOW_UP
+        self.awaiting = "followup_choice"
         return [
             "Happy to help - I can send you details by email or schedule a "
             "callback with a specialist. Which works better?"
         ]
+
+    def _slot_accepts(self, lowered, question):
+        """Should the pending value slot consume this utterance?"""
+        if self.awaiting not in _VALUE_SLOTS:
+            return False
+        if not question:
+            return True
+        # "Does tomorrow at 10 work?" is still a scheduling answer.
+        return self.awaiting == "callback_time" and \
+            bool(_TIME_HINTS.search(lowered))
+
+    def _match_tool_request(self, lowered, question):
+        """Tool intent from wording AND conversation state, not bare words."""
+        parts = lowered.split()
+        first = parts[0] if parts else ""
+        # Directed requests fire even in question form, but only when the
+        # question is a polite request ("can you...") - not a capability
+        # probe ("do you call us back if...?").
+        if not question or first in _REQUEST_MODALS:
+            if _EMAIL_REQUEST.search(lowered):
+                return "email"
+            if _CALLBACK_REQUEST.search(lowered):
+                return "callback"
+        if not question:
+            if _CALLBACK_NOUN.search(lowered):
+                return "callback"
+            if self.awaiting == "followup_choice":
+                # Short answers to "email or callback?" pick one.
+                if re.search(r"\be-?mail\b|\bmail\b", lowered):
+                    return "email"
+                if re.search(r"\bcall\b|\bphone\b", lowered):
+                    return "callback"
+        return None
 
     # ---- identification ----------------------------------------------------
 
@@ -222,28 +310,25 @@ class Agent:
             ]
 
         if slot == "volume":
-            volume = _parse_volume(cleaned)
-            if volume is not None:
-                self.volume = volume
-                self.caller_notes.append(
-                    f"fills about {volume:,} scripts a month")
-            return self._begin_discovery()
+            return self._fill_volume(cleaned, lowered)
 
         if slot == "pain_point":
             self.caller_notes.append(f"biggest time sink: {cleaned}")
             return self._deliver_pitch(lowered)
 
         if slot == "callback_time":
+            when = _extract_time(cleaned)
             self.awaiting = "anything_else"
-            tools.schedule_callback(self.pharmacy_name, cleaned)
+            tools.schedule_callback(self.pharmacy_name, when)
             return [
                 f"You're all set - a specialist will call "
-                f"{self.pharmacy_name} {cleaned}. Anything else I can help "
+                f"{self.pharmacy_name} {when}. Anything else I can help "
                 "with?"
             ]
 
         if slot == "email_address":
-            self.email = cleaned
+            address = re.search(r"\S+@\S+", cleaned)
+            self.email = address.group().strip(".,;") if address else cleaned
             self.awaiting = "anything_else"
             tools.send_follow_up_email(self.pharmacy_name, self.last_topic)
             return [
@@ -252,6 +337,24 @@ class Agent:
             ]
 
         return [self._reprompt()]
+
+    def _fill_volume(self, cleaned, lowered):
+        """Volume is optional: parse it, reprompt once, or accept a refusal."""
+        if _has_any(lowered, _REFUSAL_PHRASES):
+            return ["No problem at all."] + self._begin_discovery()
+        volume = _parse_volume(cleaned)
+        if volume is None:
+            self.volume_attempts += 1
+            if self.volume_attempts >= 2:
+                return ["No worries - we can come back to that."] + \
+                    self._begin_discovery()
+            return [
+                "Sorry, I didn't catch a number there - even a rough "
+                "ballpark works. About how many scripts a month?"
+            ]
+        self.volume = volume
+        self.caller_notes.append(f"fills about {volume:,} scripts a month")
+        return self._begin_discovery()
 
     # ---- discovery + pitch -------------------------------------------------
 
