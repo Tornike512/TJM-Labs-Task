@@ -1,211 +1,75 @@
-# Design — TJM Labs Pharmacy Sales Agent
+My planning
+TJM Labs sell AI software that does repeated office work for pharmacies and pharmacies call the number on TJM Labs's website and today human must pick up and we want to build an ai agent that answers instead of human
+this is how I think agent should work
 
-A simulated inbound sales call: a pharmacy dials TJM Labs, a text-based
-agent answers. This document describes what was built, why it is shaped
-this way, and what would change on the way to production.
+1. first check the caller's phone number in our api endpoint I was sent which is pharmacy list
+2. if that number exists in that list, ai agent greets them with their name and also uses their data of past calls
+3. if the number is not in the list, that means the ai agent should ask for the pharmacy name and Rx volume and also explain how TJM Labs help pharmacies with high Rx volume if the rx volume provided is high or directly asked
+4. at the end the AI agent should send an email info or book a callback with our sales team
+5. agent should say it's an ai agent in the start, it should use simple words and not too complex just in case pharmacy person might not be very good at english
+6. the agent should never make up things, if it doesn't know something, it should say something follow up and also ask if the pharmacy caller wants to escalate to human because it can't answer itself, so ai agent should give the caller two choices in this case
+7. the language should be English only at start, could use another languge but can't support all the languages because LLM is still not good at all languages yet, we can also add many languages support and AI can automatically detec the language once words are translated to transcript.
+8. in case of success, follow-ups booked and zero missed calls
 
-## 1. Goals and non-goals
 
-**Goals**
+my decisions
 
-- Identify an inbound caller by phone number against the pharmacy API; greet known callers with what we already know (name, city, Rx volume).
-- Collect name and volume conversationally when the caller is unknown.
-- Run a short discovery → pitch → follow-up arc that uses the pharmacy's name and tailors the close to prescription volume (threshold: 1,000 scripts/month).
-- Never state a fact the system cannot ground; funnel every unanswerable question into a follow-up email or a specialist callback (the two tools).
-- Degrade gracefully: API outage, junk records, refusals, denials, EOF.
+1. callers are pharmacy owners or staff and business people and not patients, if patient calls by mistake, the agent says we are software company and points back to their paharmacy, no medical advice ever
+2. the agent handles sales calls only, if the customer calles for support or help, the agent should navigate them to the support team instead
+3. the pharmacy list api is our only source of truth for known pharmacies now, the data in it can be messy, missing fields or junk records from other users, so the code must skip the bad records instad of completely crashing
+4. the api doesn't have ready RX volume number, we compute it by adding the prescription counts
+5. i chose 80+ as the high rx volume prescriptions because I took this number from the data and some volumes are 55-100 and i chose somewhere in the middle but we can change this anytime
+6. if the caller number is not in the list, the ai agent will treat as a new customer, it asks for the pharmacy name and then quietly re-checks in the list by that name just in case it's known and they are calling from a different number,
+7. agent should always say it's an ai agent in the start and it's recording
+8. ai agent should never ask or store patient health details, if callers starts sharing, ai agent should politely stop because it's illegal
+9. in case agents gets stuck or other caller wants human, during business hours, the ai agent can transfer, otherwise book a call or will call the caller again the next day by human
 
-**Non-goals (for this exercise)**
 
-- Real telephony, speech, or an actual LLM call — the conversation is text over stdin/stdout and intent detection is deterministic (see §7).
-- Persistence, CRM writes, multi-call memory — tools are print-mocks.
-- Natural-language coverage beyond a sales-call happy path plus the failure modes listed in `tests/`.
+system design I would go for
+this is how one call travels
 
-## 2. Explicit assumptions
+1. a pharmacy calls, the voice platform like vapi or retell picks up, it hold the phone line, turns the callers speech into text and then sends to LLM, llm answers and then we turn back to voice and we answer the caller with a voice
+2. the platform see the caller's numbers and passes it to our backend
+3. our code checks the nubmers in database with api, we have to be sure the database is pre-warmed and indexed so the answer is very fast to avoid latency, the api should pass only the important information to the LLM so the generation won't take long, I would turn off thinking mode too for the LLM
+4. if the number is not in the list, the agent asks for pharmacy name and then our code will check it in the list by that name
+5. during the entire call, one loop generates, ears to brain to mouth and repeat, the caller speaks, words become text, the brain writes reply and mouth speaks it
+6. the brain has three tools that can ask the user, follow up email, book a callback or transfer to human, usually at the end of the call
+7. after the call the full transcript is saved for improvement in the future
+8. for the first version, we rent the voice platform instead of building it from parts like twillio and separate STT and TTS
 
-- The task prompt supplies **no approved product knowledge**, so the agent makes **no company-specific claims** (pricing, features, onboarding, results). This is deliberate — see §8.
-- "Alex" is a placeholder persona name; the company name "TJM Labs" comes from the task.
-- High-volume threshold = 1,000 scripts/month, chosen from the live data's clusters (0 / 55–100 / 3,000–4,000).
-- Phone identity is sufficient identification for a demo; production would need verification (§10).
-- The shared mock API contains junk test records (letter phones, null names, empty volume arrays); the client must tolerate all of them.
 
-## 3. Call flows
+4 conversation flow
+for the voice i would pick friendly adult voice, not too old not too young
 
-**Known caller** (phone matches a record with a usable name):
+1. opening would be sometihng like this, first we should say that this is an ai and call is being recorded in different speech, then we shoul say hi, this is the TJM Labs Ai assistant, is this HealthFirst Pharmacy in new york? if we don't know the caller, just how can I help you today instead of saying specific pharmacy
+2. it should explain how TJM Labs helps, like RX volume 80+ get the high-volume pitch, smaller pharmacies get the normal pitch
+3. the ai should always answers on questions it knows and should never make things up, if it doesn't know, it should offer follow up or transfer to human, if human is not available, call again the next day in case the caller doesn't have any other question
+4. at the end, thanks for calling, have a nice day
+5. rules: caller wants human, the ai transfers to them if human is available if not book a call, if caller starts sharing patient details, politely stop them, if patient calls by a mistake, say that we are software company and to call the pharmacy directly with polite text, if it's a support question, transfer to support team, if caller seems confused twice in a row, transfer to human
 
-```
-start ─ "Thanks for calling TJM Labs… Am I speaking with <name> in <city>?"
-      ─ "<volume>" mentioned when the record has it
-confirm ─ yes → volume known? → DISCOVERY   |  volume unknown? → ask volume
-        ─ no  → treat as unknown (below), keep nothing from the record
-```
 
-**Unknown caller** (no match, API down, or a null-name record):
+how the brain works
 
-```
-start ─ "Thanks for calling TJM Labs… Could I get your pharmacy's name?"
-name → volume (accepts digits, word forms, a refusal, or two failed
-parses → move on with volume unknown) → DISCOVERY
-```
+1. we should use fast model that is not too pricy like sonnet 5, we should try many models and find the cheapest alternative with same output, we shouldn't use thinking mode because of latency
+2. the LLM should never email the caller or book a call, it should call already built python code and that code should do the job, llm should just pass the parameters
 
-Both flows converge: DISCOVERY asks one open question (biggest time
-sink), PITCH acknowledges the answer and tailors one line to volume,
-FOLLOW_UP offers email vs. callback, runs the chosen tool, and loops on
-"anything else?" until a goodbye.
 
-## 4. State and data model
+edge cases
 
-States: `IDENTIFY → DISCOVERY → PITCH → FOLLOW_UP → END`, held in
-`Agent.state`. Within a state, `Agent.awaiting` names the specific
-pending question — either a **value slot** expecting free text (`name`,
-`volume`, `pain_point`, `callback_time`, `email_address`) or a **choice
-slot** expecting yes/no/one-of (`confirm_identity`, `followup_choice`,
-`anything_else`).
+1. what if pharmacy list api is down or slow? the agent doesn't crash or stall, it continues if the callr is unknown, collets info by asking and follow-ups still work
+2. in rare cases the voice platform or LLM fails mid-call, with short apology the agent and callback the agent should hang up an re-call to them, also we should log the failure to know why it happened and if it was on our side and not LLM like claude
+3. if there is a noise and our agent can't hear, it should ask for a callback and say it's hard to hear
+4. if caller interrupts while the robot talks, the robot should stop and listen, the voice platforms suport this too
+5. we can decide if it's only english or not, if it's more languages than that, LLM can detect it and answer accordingly
+6. if it's prank or someone calls and just doesn't hang up like they are competitors or something and wants us to waste money on LLMs, if there are no voices or words or valid questions for 1-2 minutes, we hang up but very hard to avoid this, they can recall and we can block that user if the same issue occurs multiple times, but very rare case
+7. if two pharmacies are calling with the same name in the list, confirm by the city
+8.
 
-Collected data lives on the `Agent`: `pharmacy_name`, `city`, `volume`,
-`email` (each from the API record or the caller), `caller_notes`
-(quotable things the caller said), `last_topic` (what a follow-up email
-should cover, e.g. the exact out-of-scope question), and `pending_tool`
-(a tool requested before we knew the pharmacy's name).
 
-Dispatch order in `Agent.handle()` is the core correctness mechanism:
+testing
 
-1. goodbye → close;
-2. a pending value slot consumes plain statements (so "Call me tomorrow
-   at 10" is a *time*, not a new callback request);
-3. explicit tool requests — directed wording ("email **me**", "could you
-   call **us**"), or a bare "email"/"callback" only while awaiting
-   `followup_choice`;
-4. the agent's own identity ("who is this?") — the one direct answer;
-5. any other question → safe fallback;
-6. choice-slot handling; then a generic funnel line.
-
-## 5. Architecture
-
-A stdlib-only `pharmacy_agent/` package behind a thin root `main.py`
-entry point: `cli.py` (I/O loop) → `agent.py` (state machine) →
-`api.py` (data), `tools.py` (actions), `knowledge.py` (grounding
-boundary). The `tests/` package covers the API client, parsers, and
-conversation behavior (31 tests across `test_api.py`,
-`test_parsing.py`, and `test_agent.py`, with shared `fixtures.py`).
-No frameworks: the exercise is conversation design, and a visible,
-auditable state machine demonstrates it better than a dependency would.
-
-## 6. API and tool integration
-
-`api.py` fetches `GET /pharmacies` once per process (10s timeout, any
-failure → empty list → unknown-caller flow). Live-data quirks handled:
-
-- **Two record shapes**: seed records carry `prescriptions: [{drug,
-  count}]` (volume = sum); newer records carry flat `rxVolume`.
-  `rx_volume()` reads both, returns `None` when neither exists.
-- **Phone normalization**: digits only, leading US "1" dropped, minimum
-  7 digits to match — so `555 123 4567` finds `+1-555-123-4567` and the
-  `+1-555-NEW-LEAD-TEST` junk records can never match anything.
-- **Null names**: treated as unknown callers.
-
-`tools.py` mocks the two actions as prints. The agent supplies real
-context: the email tool gets a topic (default, or the caller's exact
-unanswered question), the callback tool gets the extracted time phrase.
-In production these become CRM/ticket writes with idempotency keys.
-
-## 7. LLM strategy
-
-This implementation is deliberately LLM-free: intent detection is
-keyword- and pattern-based, and every agent utterance is a template over
-grounded values. That makes the no-hallucination property *structural* —
-there is no component capable of inventing a fact.
-
-The upgrade path keeps that property: an LLM would replace the *ears*,
-not the *mouth*. Caller utterances would go to a small model returning
-structured output (intent enum + slot values, JSON-schema constrained);
-the state machine remains the sole authority on state transitions, tool
-execution, and which template is spoken. Response wording could later be
-LLM-paraphrased from template output with a post-check that no entities
-or numbers were added. Guardrails stay deterministic in both steps.
-
-## 8. Hallucination guardrails
-
-Three allowed sources: the API record, the caller's own words, and
-`knowledge.py`. Because the task supplies no approved product facts,
-`knowledge.py` deliberately contains none — so pricing, integration,
-onboarding, feature, and results questions all route to one fallback
-line that offers the two tools. The pitch grounds itself only in
-collected data ("At about 2,500 prescriptions a month, Sunrise Pharmacy
-is a high-volume operation…"). Earlier iterations shipped invented
-placeholder facts ($299 pricing, a 30% stat); they were removed because
-a running agent presenting invented numbers as true is exactly the
-failure the no-hallucination requirement describes.
-
-Guardrail edge: tool intents are state-aware, so "Do you send email
-reminders?" is a capability question (fallback), while "email me the
-details" or "can you email me?" is a directed request (tool). Directed
-patterns require the me/us object; question forms qualify only when they
-start with a request modal (can/could/would/will/please).
-
-## 9. Failure handling
-
-- API unreachable / non-list payload → empty list, one console note, unknown-caller flow.
-- Unparseable volume → one polite reprompt, then proceed with volume unknown; explicit refusals accepted immediately.
-- Identity denial → apologize, drop all record data, re-collect.
-- Blank input → re-ask the pending question; EOF/Ctrl-C → treated as goodbye, clean exit.
-- Tool requests before the name is known → `pending_tool`, collect name first, then run the tool.
-
-## 10. Privacy and security
-
-Held data is business-contact PII (pharmacy name, phone, email, volume),
-kept in process memory only and printed only as part of the call itself;
-nothing is persisted. No secrets exist in the repo (the mock API is
-public). For production: verify caller identity before reading account
-data aloud (caller-ID is spoofable), encrypt transcripts at rest, apply
-retention limits and access control to caller notes, redact PII from
-logs, and treat all caller input as untrusted when it reaches real
-email/CRM systems (escaping, allow-listed recipients, rate limits).
-
-## 11. Observability
-
-Today: transcripts are the observable, plus `[TOOL CALLED]` markers and
-the API-outage notice. The state machine gives natural structured-log
-points — every `handle()` could emit `(state, awaiting, intent_matched,
-tool_fired)`. The metrics that matter: fallback rate (grounding pressure
-gauge), tool conversion rate, identification hit rate, and unparsed-slot
-rate. Evaluation: replay a corpus of scripted calls (the `tests/test_agent.py`
-conversations are the seed) and fail CI on any grounding violation —
-i.e. an agent line containing a number or entity not traceable to the
-three sources.
-
-## 12. Tradeoffs
-
-- **Keyword intents vs. an LLM**: chosen for determinism and zero
-  dependencies; the cost is brittleness to paraphrase ("ring the shop
-  Thursday" won't parse). §7 is the mitigation path.
-- **Statement-first slot filling**: makes "Call me tomorrow at 10" work
-  while a time is pending, at the cost of occasionally capturing an odd
-  slot value ("schedule a callback" as a time). Chosen because a wrong
-  slot value is recoverable in-conversation; a double-fired tool is not.
-- **No claims at all vs. labeled placeholder claims**: honesty over
-  demo-flash. The transcript sells the *process* (grounded pitch +
-  specialist funnel) instead of invented numbers.
-- **Single-process, fetch-once**: right for a demo; production needs
-  caching with TTL and retries.
-
-## 13. Rollout plan
-
-1. **Shadow**: run the agent against recorded/live call text with tools
-   stubbed; measure fallback rate and grounding violations (target: 0).
-2. **Assisted**: agent drafts replies and tool calls; a human approves
-   each send/schedule. Approval edits become evaluation data.
-3. **Autonomous within rails**: agent speaks and fires tools itself for
-   the narrow flows proven in shadow; anything off-script transfers to a
-   human. Expand scope only as approved knowledge is added to
-   `knowledge.py` with an owner and a review date per fact.
-
-## 14. Open questions
-
-- What product facts *are* approved, and who owns keeping them current?
-- Is caller-ID identification acceptable before quoting account data
-  (Rx volume) aloud, or is a verification step required first?
-- Where do tool actions land in production (CRM, ticketing, calendar),
-  and what are the idempotency/retry semantics there?
-- Should volume tiers be finer than one threshold (e.g. 0–500 /
-  500–1,500 / 1,500+), and does the specialist team want the raw pain
-  -point quote or a category?
+1. to test we can fake calls in texts, we play the caller ourselves and run the normal routes, pharmacy both unknow and known and each too, everything there is
+2. we should trap the questions, we can ask questions like, how much does it cost per month? price is banned and we should offer follow up, are you Hipaa certified? this is a legal claim and should never improvise legal claim, you are better than our competitor and say the name, the ai agent shouldn't brag
+3. on purpose unplug the pharmacy api, kill the LLM mid call, stay silent, interrupt mid-sentence, the ai agent should react as described above
+4. all these test conversations saved as one fixed exam, before any change goes live, new fact or new prompt wording, we should run the who exam and compare answers, this is regression testing so we are sure ai-agent doesn't get worse
+5. after launch read transcripts weekly, we can use other llms for reading them since they are much better than humans in this, we should also look at follow-ups booked per call, missed calls should be zero, how often the robot needed human and the escalation rate, how often it recognized callers correctly
