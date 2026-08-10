@@ -93,18 +93,3 @@ python -m unittest
 31 tests covering API lookup, parsing, conversation state, safe fallbacks,
 and tool calls. No network access is needed except one deliberate
 unreachable-host failure test.
-
-## If I had three more hours
-
-First hour: build a small evaluation set of realistic pharmacy utterances
-("we do maybe 2k a month", "can u resend that") and replace the keyword
-matching with schema-constrained intent and slot extraction, keeping the
-state machine in charge of responses and tool calls.
-
-Second hour: put a telephony webhook in front of the loop and back the
-email and callback tools with a CRM, with idempotency keys and retries so a
-dropped webhook cannot double-schedule a callback.
-
-Third hour: add structured event logging for each turn, redact caller
-details from those logs, and wire an end-to-end transcript test into CI so
-a conversation regression fails a build instead of a demo.
